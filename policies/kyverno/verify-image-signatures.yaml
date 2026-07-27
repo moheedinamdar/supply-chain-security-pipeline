@@ -1,0 +1,48 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Cosign Signature and SLSA Provenance
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Only admit images from this project that are cosign keyless-signed by the
+      project's GitHub Actions workflow AND carry a valid SLSA provenance
+      attestation. Everything else is rejected at admission.
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  background: false
+  rules:
+    - name: verify-signature-and-provenance
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/moheedinamdar/supply-chain-security-pipeline*"
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    issuer: "https://token.actions.githubusercontent.com"
+                    subject: "https://github.com/moheedinamdar/supply-chain-security-pipeline/*"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            - type: https://slsa.dev/provenance/v1
+              attestors:
+                - count: 1
+                  entries:
+                    - keyless:
+                        issuer: "https://token.actions.githubusercontent.com"
+                        subject: "https://github.com/moheedinamdar/supply-chain-security-pipeline/*"
+                        rekor:
+                          url: https://rekor.sigstore.dev
