@@ -1,0 +1,19 @@
+# Artifacts produced by the pipeline
+sbom*.json
+*.att.json
+*.sig
+*.pem
+cosign.key
+cosign.pub
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
