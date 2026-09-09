@@ -6,10 +6,10 @@
 ![License](https://img.shields.io/badge/license-MIT-58a6ff)
 
 A reference implementation of a **hardened, SLSA-aligned software supply chain**
-for container workloads — from source to a signature-verified deployment on
+for container workloads, from source to a signature-verified deployment on
 Kubernetes.
 
-> **Status:** 🚧 Building in public. Stages are wired up incrementally — see the
+> **Status:** 🚧 Building in public. Stages are wired up incrementally: see the
 > [roadmap](#roadmap). Nothing here is production-hardened yet.
 
 ## Why
@@ -22,12 +22,12 @@ pipeline that makes tampering detectable and policy-enforced at admission time.
 ## What it does
 
 - **Build** a container image for a small sample workload.
-- **SBOM** — generate a Software Bill of Materials with [Syft](https://github.com/anchore/syft) (SPDX JSON).
-- **Scan** — fail the build on high/critical CVEs with [Grype](https://github.com/anchore/grype).
-- **Sign** — keyless signing of the image with [Sigstore cosign](https://github.com/sigstore/cosign) (OIDC → Fulcio → Rekor transparency log).
-- **Attest** — attach the SBOM as a signed attestation.
-- **Provenance** — emit SLSA build provenance (Build Level 3 target) via the official SLSA generator.
-- **Verify at admission** — a [Kyverno](https://kyverno.io) `ClusterPolicy` rejects any image on the cluster that isn't cosign-signed and lacks valid SLSA provenance.
+- **SBOM**: generate a Software Bill of Materials with [Syft](https://github.com/anchore/syft) (SPDX JSON).
+- **Scan**: fail the build on high/critical CVEs with [Grype](https://github.com/anchore/grype).
+- **Sign**: keyless signing of the image with [Sigstore cosign](https://github.com/sigstore/cosign) (OIDC → Fulcio → Rekor transparency log).
+- **Attest**: attach the SBOM as a signed attestation.
+- **Provenance**: emit SLSA build provenance (Build Level 3 target) via the official SLSA generator.
+- **Verify at admission**: a [Kyverno](https://kyverno.io) `ClusterPolicy` rejects any image on the cluster that isn't cosign-signed and lacks valid SLSA provenance.
 
 ## Architecture
 
