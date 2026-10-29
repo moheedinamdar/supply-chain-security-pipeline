@@ -1,0 +1,148 @@
+name: build-attest
+
+# Reusable on purpose: keyless certificates name this file, not the caller,
+# so a caller cannot forge the identity the cluster trusts (SLSA Build L3).
+on:
+  workflow_call:
+    outputs:
+      image:
+        description: Image repository without tag or digest
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: Image manifest digest
+        value: ${{ jobs.build.outputs.digest }}
+      manifests:
+        description: OCI repository holding the deploy manifests
+        value: ${{ jobs.build.outputs.manifests }}
+      manifests-digest:
+        description: Digest of the signed deploy manifests artifact
+        value: ${{ jobs.build.outputs.manifests-digest }}
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/moheedinamdar/supply-chain-security-pipeline
+  MANIFESTS: ghcr.io/moheedinamdar/supply-chain-security-pipeline/manifests
+  SYFT_VERSION: v1.55.0
+  GRYPE_VERSION: v0.121.0
+  COSIGN_VERSION: v3.1.4
+  FLUX_VERSION: 2.10.0
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ env.IMAGE }}
+      digest: ${{ steps.build.outputs.digest }}
+      manifests: ${{ env.MANIFESTS }}
+      manifests-digest: ${{ steps.manifests.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # buildx's own attestations are off so the digest is a single image manifest.
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./app
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          syft-version: ${{ env.SYFT_VERSION }}
+          upload-release-assets: false
+
+      # The image is already pushed, but it stays unsigned if this fails, so admission rejects it.
+      - name: Vulnerability gate (Grype)
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: sbom.spdx.json
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Keyless sign image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Attest SBOM
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate sbom.spdx.json \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Attest SLSA build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@3fa784edd773d56630bb9f62645e08f70c2cff0a # v2.10.0
+        with:
+          version: ${{ env.FLUX_VERSION }}
+
+      - name: Package and sign deploy manifests
+        id: manifests
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p rendered
+          sed "s|__IMAGE__|${IMAGE}@${DIGEST}|" deploy/app/deployment.yaml > rendered/deployment.yaml
+          ref=$(flux push artifact "oci://${MANIFESTS}:${GITHUB_SHA}" \
+            --path=./rendered \
+            --source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --revision="${GITHUB_REF_NAME}@sha1:${GITHUB_SHA}" \
+            --output json | jq -r '.repository + "@" + .digest')
+          cosign sign --yes "${ref}"
+          echo "digest=${ref#*@}" >> "${GITHUB_OUTPUT}"
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          MANIFESTS_DIGEST: ${{ steps.manifests.outputs.digest }}
+        run: |
+          {
+            echo "### Signed artifacts"
+            echo "- Image: \`${IMAGE}@${DIGEST}\`"
+            echo "- Manifests: \`${MANIFESTS}@${MANIFESTS_DIGEST}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
