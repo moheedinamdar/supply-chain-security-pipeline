@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    supply-chain-security/enforce: "true"
+---
+# Deliberately unenforced: proves the policies are scoped, not cluster-wide.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox
