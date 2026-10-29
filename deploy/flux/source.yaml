@@ -1,0 +1,15 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: app
+  namespace: flux-system
+spec:
+  interval: 10m
+  url: oci://ghcr.io/moheedinamdar/supply-chain-security-pipeline/manifests
+  ref:
+    digest: __DIGEST__
+  verify:
+    provider: cosign
+    matchOIDCIdentity:
+      - issuer: "^https://token\\.actions\\.githubusercontent\\.com$"
+        subject: "^https://github\\.com/moheedinamdar/supply-chain-security-pipeline/\\.github/workflows/build-attest\\.yml@refs/heads/main$"
