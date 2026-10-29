@@ -1,0 +1,60 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: pod-hardening
+  annotations:
+    policies.kyverno.io/title: Pod hardening baseline
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      In enforced namespaces, every container must run as non-root, unprivileged,
+      without privilege escalation, on a read-only root filesystem and with CPU
+      and memory limits. Pods must carry team and cost-center labels.
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        supply-chain-security/enforce: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers
+        + (has(object.spec.initContainers) ? object.spec.initContainers : [])
+  validations:
+    - expression: >-
+        variables.allContainers.all(c, has(c.securityContext)
+          && has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot == true)
+      message: every container must set securityContext.runAsNonRoot to true
+    - expression: >-
+        variables.allContainers.all(c, !has(c.securityContext)
+          || !has(c.securityContext.privileged) || c.securityContext.privileged == false)
+      message: privileged containers are not allowed
+    - expression: >-
+        variables.allContainers.all(c, has(c.securityContext)
+          && has(c.securityContext.allowPrivilegeEscalation)
+          && c.securityContext.allowPrivilegeEscalation == false)
+      message: every container must set securityContext.allowPrivilegeEscalation to false
+    - expression: >-
+        variables.allContainers.all(c, has(c.securityContext)
+          && has(c.securityContext.readOnlyRootFilesystem)
+          && c.securityContext.readOnlyRootFilesystem == true)
+      message: every container must set securityContext.readOnlyRootFilesystem to true
+    - expression: >-
+        variables.allContainers.all(c, has(c.resources) && has(c.resources.limits)
+          && 'cpu' in c.resources.limits && 'memory' in c.resources.limits)
+      message: every container must set CPU and memory limits
+    - expression: >-
+        has(object.metadata.labels)
+        && 'team' in object.metadata.labels
+        && 'cost-center' in object.metadata.labels
+      message: pods must carry team and cost-center labels
