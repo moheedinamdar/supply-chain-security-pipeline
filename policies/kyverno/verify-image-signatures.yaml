@@ -1,48 +1,78 @@
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
 metadata:
   name: verify-image-signatures
   annotations:
-    policies.kyverno.io/title: Verify Cosign Signature and SLSA Provenance
+    policies.kyverno.io/title: Verify signature, SLSA provenance and SBOM
     policies.kyverno.io/category: Supply Chain Security
     policies.kyverno.io/severity: high
     policies.kyverno.io/description: >-
-      Only admit images from this project that are cosign keyless-signed by the
-      project's GitHub Actions workflow AND carry a valid SLSA provenance
-      attestation. Everything else is rejected at admission.
+      In enforced namespaces, every container image must be cosign keyless-signed
+      by this repository's reusable build workflow and carry SLSA v1 provenance and
+      an SPDX SBOM attestation from the same identity. Anything else is denied.
 spec:
-  validationFailureAction: Enforce
-  webhookTimeoutSeconds: 30
+  validationActions: [Deny]
   failurePolicy: Fail
-  background: false
-  rules:
-    - name: verify-signature-and-provenance
-      match:
-        any:
-          - resources:
-              kinds:
-                - Pod
-      verifyImages:
-        - imageReferences:
-            - "ghcr.io/moheedinamdar/supply-chain-security-pipeline*"
-          mutateDigest: true
-          verifyDigest: true
-          required: true
-          attestors:
-            - count: 1
-              entries:
-                - keyless:
-                    issuer: "https://token.actions.githubusercontent.com"
-                    subject: "https://github.com/moheedinamdar/supply-chain-security-pipeline/*"
-                    rekor:
-                      url: https://rekor.sigstore.dev
-          attestations:
-            - type: https://slsa.dev/provenance/v1
-              attestors:
-                - count: 1
-                  entries:
-                    - keyless:
-                        issuer: "https://token.actions.githubusercontent.com"
-                        subject: "https://github.com/moheedinamdar/supply-chain-security-pipeline/*"
-                        rekor:
-                          url: https://rekor.sigstore.dev
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        supply-chain-security/enforce: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchImageReferences:
+    - glob: "*"
+  validationConfigurations:
+    mutateDigest: true
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: buildWorkflow
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subject: https://github.com/moheedinamdar/supply-chain-security-pipeline/.github/workflows/build-attest.yml@refs/heads/main
+        ctlog:
+          url: https://rekor.sigstore.dev
+  attestations:
+    - name: slsaProvenance
+      intoto:
+        type: https://slsa.dev/provenance/v1
+    - name: sbom
+      intoto:
+        type: https://spdx.dev/Document
+  variables:
+    # Init and ephemeral containers count too, otherwise they are an unsigned side door.
+    - name: allImages
+      expression: >-
+        images.containers
+        + ('initContainers' in images ? images.initContainers : [])
+        + ('ephemeralContainers' in images ? images.ephemeralContainers : [])
+  validations:
+    - expression: >-
+        variables.allImages.all(image,
+          verifyImageSignatures(image, [attestors.buildWorkflow]) > 0)
+      message: image is not signed by the trusted build workflow
+    - expression: >-
+        variables.allImages.all(image,
+          verifyAttestationSignatures(image, attestations.slsaProvenance, [attestors.buildWorkflow]) > 0)
+      message: image has no SLSA provenance from the trusted build workflow
+    - expression: >-
+        variables.allImages.all(image,
+          verifyAttestationSignatures(image, attestations.sbom, [attestors.buildWorkflow]) > 0)
+      message: image has no SBOM attestation from the trusted build workflow
+    - expression: >-
+        variables.allImages.all(image,
+          extractPayload(image, attestations.slsaProvenance).buildDefinition.externalParameters.workflow.repository
+            == 'https://github.com/moheedinamdar/supply-chain-security-pipeline'
+          && extractPayload(image, attestations.slsaProvenance).buildDefinition.externalParameters.workflow.ref
+            == 'refs/heads/main')
+      message: SLSA provenance was not built from main in this repository
