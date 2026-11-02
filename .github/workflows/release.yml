@@ -27,11 +27,13 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: ./.github/workflows/build-attest.yml
+    # actionlint 1.7.12 does not understand the newer self-repository syntax yet.
+    uses: ./.github/workflows/build-attest.yml # zizmor: ignore[self-repository]
 
   verify:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
       attestations: read
@@ -52,12 +54,16 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${IMAGE}@${DIGEST}"
 
+      # The payload is a multi-MB single line; the runner's secret masking stalled for 90 minutes printing it.
       - name: Verify SBOM attestation
         run: |
           cosign verify-attestation --type spdxjson \
             --certificate-identity "${SIGNER}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "${IMAGE}@${DIGEST}"
+            "${IMAGE}@${DIGEST}" > sbom-attestation.json
+          echo "Verified SBOM attestation: $(wc -c < sbom-attestation.json) bytes"
+          jq -r '.payload' sbom-attestation.json | base64 -d | jq -c '{predicateType, subject}' \
+            || echo "verified, but the payload could not be summarised"
 
       - name: Verify SLSA provenance
         env:
@@ -70,6 +76,7 @@ jobs:
   e2e:
     needs: [build, verify]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -121,3 +128,57 @@ jobs:
 
       - name: Run admission and GitOps assertions
         run: ./scripts/e2e.sh
+
+  trace:
+    needs: [build, verify, e2e]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      COLLECTOR_IMAGE: otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b
+      JAEGER_IMAGE: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start OpenTelemetry Collector and Jaeger
+        run: |
+          mkdir -p otel-out
+          chmod 777 otel-out
+          docker network create otel
+          docker run -d --name jaeger --network otel -p 16686:16686 "${JAEGER_IMAGE}"
+          docker run -d --name collector --network otel -p 4318:4318 \
+            -v "${PWD}/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+            -v "${PWD}/otel-out:/out" \
+            "${COLLECTOR_IMAGE}"
+
+      - name: Export this run as a trace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_trace.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --endpoint http://localhost:4318/v1/traces \
+            --jaeger http://localhost:16686 \
+            --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Flush collector
+        if: always()
+        run: |
+          docker stop collector
+          docker logs collector
+
+      - name: Upload OTLP export
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: otel-trace
+          path: otel-out/traces.json
+          if-no-files-found: warn
