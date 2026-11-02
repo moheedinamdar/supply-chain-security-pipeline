@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Admission and GitOps proof against a kind cluster. CI only: it pushes test images and signs with OIDC.
-set -euo pipefail
+set -Eeuo pipefail
 # Run the last pipeline stage in this shell so expect_* can update the failure counter.
 shopt -s lastpipe
 
@@ -34,6 +34,12 @@ flux_status() { # kind/name...
   kubectl -n flux-system get "$@" -o json | jq -r '(.items // [.])[]
     | "\(.kind)/\(.metadata.name): " + ([.status.conditions[]? | "\(.type)=\(.status) \(.message)"] | join("; "))'
 }
+
+# Setup failures abort under set -e before any assertion runs; surface them as annotations too.
+touch "$workdir/stderr.log"
+exec 2> >(tee -a "$workdir/stderr.log" >&2)
+trap 'annotate error "e2e aborted at line ${LINENO}: ${BASH_COMMAND}
+$(tail -c 900 "$workdir/stderr.log")"' ERR
 
 container() { # name image privileged
   local escalate=false
