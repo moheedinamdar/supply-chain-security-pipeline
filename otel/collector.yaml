@@ -1,0 +1,30 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Skipped steps carry no timing signal, so drop them before any backend stores them.
+  filter/skipped:
+    error_mode: ignore
+    trace_conditions:
+      - span.attributes["cicd.pipeline.task.run.result"] == "skip"
+  batch: {}
+
+exporters:
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  file:
+    path: /out/traces.json
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/skipped, batch]
+      exporters: [otlp_grpc/jaeger, file, debug]
