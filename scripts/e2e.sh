@@ -124,7 +124,20 @@ helm install kyverno kyverno --repo https://kyverno.github.io/kyverno \
   --wait --timeout 5m
 
 kubectl apply -f deploy/cluster/namespaces.yaml
-kubectl apply -f policies/kyverno/
+
+# helm --wait can return before Kyverno's policy-validation webhook accepts connections.
+echo "== Applying policies"
+kubectl -n kyverno rollout status deployment/kyverno-admission-controller --timeout=5m
+for attempt in $(seq 1 30); do
+  if kubectl apply -f policies/kyverno/; then
+    break
+  fi
+  if ((attempt == 30)); then
+    fail "Kyverno never accepted the policies"
+    exit 1
+  fi
+  sleep 10
+done
 
 echo "== Waiting for the policies to reach the admission webhook"
 active=false
