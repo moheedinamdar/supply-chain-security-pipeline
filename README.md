@@ -101,6 +101,23 @@ gh attestation verify "oci://$IMAGE" \
 
 The digest is printed in the `build` job summary of each release run.
 
+## Pipeline observability (OpenTelemetry)
+
+The last job of every release run, `trace`, turns the run itself into an
+OpenTelemetry trace: one span for the run, one per job, one per step, using the
+OpenTelemetry CI/CD semantic conventions (`cicd.pipeline.*`, `vcs.*`).
+
+- [`scripts/ci_trace.py`](scripts/ci_trace.py) reads the run from the GitHub API
+  (standard library only) and sends OTLP/HTTP to a Collector.
+- [`otel/collector.yaml`](otel/collector.yaml) drops skipped-step spans with the
+  `filter` processor before anything is stored, then fans out to Jaeger, a file
+  exporter and the debug log.
+- The job fails unless Jaeger's query API returns the trace, so "traced" is
+  asserted, not assumed. The raw OTLP export is uploaded as the `otel-trace`
+  artifact and the job summary renders the run as a timeline.
+
+It runs even when an earlier job fails, which is when a timeline is most useful.
+
 ## Repository layout
 
 ```
@@ -109,17 +126,20 @@ The digest is printed in the `build` job summary of each release run.
 │   ├── dependabot.yml                  # keeps the SHA-pinned actions and base image current
 │   └── workflows/
 │       ├── build-attest.yml            # reusable: build, SBOM, gate, sign, attest, sign manifests
-│       ├── release.yml                 # caller: build, independent verify, kind e2e
+│       ├── release.yml                 # caller: build, independent verify, kind e2e, OTel trace
 │       └── lint.yml                    # actionlint, zizmor, hadolint
 ├── app/                                # sample workload (dependency-free Python)
 ├── deploy/
 │   ├── app/deployment.yaml             # hardened Deployment, image digest filled in by CI
 │   ├── cluster/namespaces.yaml         # enforced prod, unenforced sandbox
 │   └── flux/                           # OCIRepository with cosign verification + Kustomization
+├── otel/collector.yaml                 # OpenTelemetry Collector: filter, Jaeger, file export
 ├── policies/kyverno/
 │   ├── verify-image-signatures.yaml    # ImageValidatingPolicy
 │   └── pod-hardening.yaml              # ValidatingPolicy
-└── scripts/e2e.sh                      # admission and GitOps assertions
+└── scripts/
+    ├── e2e.sh                          # admission and GitOps assertions
+    └── ci_trace.py                     # exports a workflow run as an OpenTelemetry trace
 ```
 
 ## Design notes
@@ -150,7 +170,7 @@ curl localhost:8080
 - [x] Kyverno image verification and pod hardening policies
 - [x] Flux deploy-time signature verification
 - [x] kind end-to-end assertions in CI
-- [ ] OpenTelemetry traces of each pipeline stage
+- [x] OpenTelemetry traces of each pipeline stage
 - [ ] Signed MCP server behind a gateway, enforced by the same policies
 
 ## License
