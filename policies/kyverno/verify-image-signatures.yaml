@@ -69,10 +69,11 @@ spec:
         variables.allImages.all(image,
           verifyAttestationSignatures(image, attestations.sbom, [attestors.buildWorkflow]) > 0)
       message: image has no SBOM attestation from the trusted build workflow
+    # extractPayload returns the whole in-toto statement, so the SLSA fields sit under .predicate.
     - expression: >-
         variables.allImages.all(image,
-          extractPayload(image, attestations.slsaProvenance).buildDefinition.externalParameters.workflow.repository
+          extractPayload(image, attestations.slsaProvenance).predicate.buildDefinition.externalParameters.workflow.repository
             == 'https://github.com/moheedinamdar/supply-chain-security-pipeline'
-          && extractPayload(image, attestations.slsaProvenance).buildDefinition.externalParameters.workflow.ref
+          && extractPayload(image, attestations.slsaProvenance).predicate.buildDefinition.externalParameters.workflow.ref
             == 'refs/heads/main')
       message: SLSA provenance was not built from main in this repository
