@@ -12,8 +12,28 @@ RUN_ID="${GITHUB_RUN_ID:-local}"
 workdir=$(mktemp -d)
 failures=0
 
-pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
+# Annotations are readable through the public checks API; raw job logs need a GitHub login.
+annotate() { # level message
+  [[ -n "${GITHUB_ACTIONS:-}" ]] || return 0
+  local msg=${2//'%'/'%25'}
+  msg=${msg//$'\r'/'%0D'}
+  msg=${msg//$'\n'/'%0A'}
+  echo "::$1 title=e2e::${msg}"
+}
+
+pass() { echo "PASS: $1"; annotate notice "PASS: $1"; }
+fail() { # description [detail]
+  echo "FAIL: $1"
+  [[ -n "${2:-}" ]] && echo "$2"
+  annotate error "FAIL: $1${2:+
+$2}"
+  failures=$((failures + 1))
+}
+
+flux_status() { # kind/name...
+  kubectl -n flux-system get "$@" -o json | jq -r '(.items // [.])[]
+    | "\(.kind)/\(.metadata.name): " + ([.status.conditions[]? | "\(.type)=\(.status) \(.message)"] | join("; "))'
+}
 
 container() { # name image privileged
   local escalate=false
@@ -67,8 +87,7 @@ expect_admit() { # description < manifest
   if kubectl apply --dry-run=server -f "$workdir/manifest.yaml" 2> "$err"; then
     pass "$1"
   else
-    fail "$1 (denied)"
-    cat "$err"
+    fail "$1 (denied)" "$(head -c 700 "$err")"
   fi
 }
 
@@ -81,8 +100,7 @@ expect_deny() { # description expected-policy < manifest
     pass "$1"
     sed 's/^/    /' "$err"
   else
-    fail "$1 (denied, but not by $2)"
-    cat "$err"
+    fail "$1 (denied, but not by $2)" "$(head -c 700 "$err")"
   fi
 }
 
@@ -113,8 +131,7 @@ for _ in $(seq 1 36); do
   sleep 5
 done
 if [[ "$active" != true ]]; then
-  echo "Policies never became active"
-  cat "$workdir/err"
+  fail "policies never became active" "$(head -c 700 "$workdir/err")"
   kubectl get imagevalidatingpolicies,validatingpolicies -o yaml
   exit 1
 fi
@@ -150,7 +167,7 @@ if kubectl -n flux-system wait ocirepository/app \
   pass "signed manifests are verified by Flux and the signed image runs in prod"
   kubectl -n prod get pods -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.containers[0].image}{"\n"}{end}'
 else
-  fail "signed manifests did not deploy"
+  fail "signed manifests did not deploy" "$(flux_status ocirepository/app kustomization/app | head -c 700)"
   flux -n flux-system get all
   kubectl -n prod get events --sort-by=.lastTimestamp
 fi
@@ -169,7 +186,7 @@ if kubectl -n flux-system wait ocirepository/app-unsigned \
   kubectl -n flux-system get ocirepository/app-unsigned \
     -o jsonpath='{.status.conditions[?(@.type=="SourceVerified")].message}{"\n"}'
 else
-  fail "unsigned manifests were not rejected"
+  fail "unsigned manifests were not rejected" "$(flux_status ocirepository/app-unsigned | head -c 700)"
   kubectl -n flux-system get ocirepository/app-unsigned -o yaml
 fi
 
